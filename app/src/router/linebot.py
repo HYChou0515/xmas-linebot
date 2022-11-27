@@ -13,9 +13,6 @@ from linebot.models import (
     ImageMessage,
 )
 
-from service import ImagingService
-from fastapi.responses import FileResponse
-
 import service
 from config import config
 
@@ -45,27 +42,6 @@ async def callback(request: Request) -> str:
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Missing Parameter")
     return "OK"
-
-
-def get_named_temporary_file():
-    return tempfile.NamedTemporaryFile(delete=False)
-
-
-def delete_temporary_file(name):
-    os.remove(name)
-
-
-@router.get("/tea/{token}")
-async def tea(
-    token: str,
-    background_tasks: BackgroundTasks,
-    imaging_service: ImagingService = Depends(),
-    tmp: tempfile.NamedTemporaryFile = Depends(get_named_temporary_file),
-) -> FileResponse:
-    bio = imaging_service.get_image(token)
-    background_tasks.add_task(lambda: delete_temporary_file(tmp.name))
-    tmp.write(bio.read())
-    return FileResponse(tmp.name)
 
 
 @handler.add(FollowEvent)

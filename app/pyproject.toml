@@ -16,6 +16,8 @@ pillow = "^9.3.0"
 opencv-python = "^4.6.0.66"
 httpx = "^0.23.1"
 scikit-image = "^0.19.3"
+sqlalchemy = "^1.4.44"
+pandas = "^1.5.2"
 
 
 [tool.poetry.group.dev.dependencies]
