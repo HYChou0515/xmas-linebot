@@ -60,7 +60,15 @@ async def handle_image_message(event) -> None:
             bio.write(chunk)
         try:
             text, result, thumbnail = imaging_service.handle_image(bio)
-
+            bio.seek(0)
+            await imaging_service.upload_image(
+                user_id,
+                get_written_bio(
+                    lambda b: Image.open(bio).save(
+                        b, format="JPEG"
+                    )
+                ),
+            )
             result_token = await imaging_service.upload_image(
                 user_id,
                 get_written_bio(
