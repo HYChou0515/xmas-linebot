@@ -1,11 +1,14 @@
 import asyncio
 from io import BytesIO
 
+import numpy as np
+from PIL import Image
 from linebot import LineBotApi
 from linebot.models import TextMessage, TextSendMessage, ImageMessage, ImageSendMessage
 
 from config import config
 from service.imaging import ImagingService
+from utils import get_written_bio
 
 line_bot_api = LineBotApi(config.LINE_CHANNEL_ACCESS_TOKEN)
 
@@ -56,9 +59,25 @@ async def handle_image_message(event) -> None:
         for chunk in message_content.iter_content():
             bio.write(chunk)
         try:
-            result = imaging_service.handle_image(user_id, bio)
+            text, result, thumbnail = imaging_service.handle_image(bio)
+
+            result_token = await imaging_service.upload_image(
+                user_id,
+                get_written_bio(
+                    lambda bio: Image.fromarray(np.uint8(result * 255)).save(
+                        bio, format="JPEG"
+                    )
+                ),
+            )
+            thumbnail_token = await imaging_service.upload_image(
+                user_id,
+                get_written_bio(
+                    lambda bio: Image.fromarray(np.uint8(thumbnail * 255)).save(
+                        bio, format="JPEG"
+                    )
+                ),
+            )
             api_root = imaging_service.get_baseurl()
-            text, result_token, thumbnail_token = await result
             api_root = await api_root
             message = [
                 TextSendMessage(text=text),

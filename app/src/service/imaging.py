@@ -1,8 +1,9 @@
-import asyncio
-import tempfile
+from collections import Counter
+from loguru import logger
 from io import BytesIO
 from typing import Optional
 import json
+from joblib import Parallel, delayed
 
 import cv2
 import httpx
@@ -51,37 +52,67 @@ class ImagingService:
     async def get_image(self, token):
         return await self.image_dao.get_image(token)
 
-    def get_red_mask(self, image):
-        image = self.white_balance(image)
-        bio = get_written_bio(
-            lambda bio: Image.fromarray(np.uint8(image * 255)).save(bio, format="JPEG")
-        )
-
-        with tempfile.NamedTemporaryFile("wb") as f:
-            f.write(bio.read())
-            bio.seek(0)
-            image = skimage.io.imread(f.name)
-
+    @staticmethod
+    def get_red_mask(image):
+        # image = self.white_balance(image)
+        # image = np.array(image*255, dtype='uint8')
         hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
 
-        # Threshold of blue in HSV space
-        lower_red1 = np.array([0, 70, 50])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 70, 50])
-        upper_red2 = np.array([180, 255, 255])
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        redmask = cv2.bitwise_or(mask1, mask2)
+        # Threshold of red in HSV space
+        h = hsv[:, :, 0]
+        s = hsv[:, :, 1] / 255
+        v = hsv[:, :, 2] / 255
+        # bound = np.nonzero(((s + 0.16) * (v + 0.05) >= 0.08) & ((h + 30) % 180 <= 40))
+        bound = np.nonzero(((s + 0.16) * (v + 0.05) >= 0.23) & ((h + 30) % 180 <= 40))
+        redmask = np.zeros(hsv.shape[:2], dtype="uint8")
+        redmask[bound] = 255
+        # Image.fromarray(cv2.bitwise_and(image, image, mask=(rm))).show()
+        # Image.fromarray(image).show()
+        #
+        # kernel = np.zeros((19, 19), dtype='uint8')
+        # for i in range(10):
+        #     kernel[i,i:19-i] = 1
+        #
+        # rm = redmask.copy()
+        # for i in range(1):
+        #     a = np.zeros_like(rm)
+        #     for i in range(4):
+        #         aa = sig.convolve2d(rm, kernel, mode="same")
+        #         aa[aa<kernel.sum()] = 0
+        #         aa[aa>=kernel.sum()] = 1
+        #         a = cv2.bitwise_or(aa, a)
+        #         kernel = np.rot90(kernel)
+        #     rm = cv2.bitwise_and(rm, a)
+        _, labels = cv2.connectedComponents(redmask)
+        cnt = Counter(labels.reshape(-1))
 
-        return redmask
+        # cnt = set(k for k in )
+        def f(_x):
+            x, y = _x
+            if x == 0:
+                if cnt.get(y) < 200:
+                    return x
+                return 0
+            if cnt.get(y) < 400:
+                return 0
+            return x
 
-    async def do_mrcnn(self, client, image_b64):
-        req = client.post(
+        ff = np.vectorize(f, signature="(n)->()")
+        rm = ff(np.stack([redmask, labels], -1))
+        rm = rm.astype("uint8")
+        logger.info("redmask done")
+        return rm
+
+    @staticmethod
+    def do_mrcnn(image_b64):
+        req = httpx.post(
+            # "http://127.0.0.1:8000/",
             "http://192.168.1.233:8000/",
             data=json.dumps({"imageb64": image_b64}),
             timeout=None,
         )
-        return await req
+        logger.info("mrcnn done")
+        return req
 
     def get_resized(self, image):
         max_pixel = 3500000
@@ -107,55 +138,56 @@ class ImagingService:
         )
         return result, thumbnail
 
-    async def handle_image(self, user_id, image_io):
+    def handle_image(self, image_io):
         image = ImageConverter(bio=image_io)
-        async with httpx.AsyncClient() as client:
-            task = asyncio.create_task(self.do_mrcnn(client, image.base64))
-            redmask = self.get_red_mask(image.cv2_image)
-            ret = await task
+        ret, redmask = Parallel(n_jobs=2, prefer="threads")(
+            (
+                delayed(self.do_mrcnn)(image.base64),
+                delayed(self.get_red_mask)(image.cv2_image),
+            )
+        )
 
         if ret.status_code != 200:
             raise ValueError("mrcnn error")
 
         retobj = json.loads(ret.text)
         ret_masks = retobj["masks"]
+        masks = np.array(ret_masks)
         mask_list = set(ret_masks[2])
-        texts = []
-        images = []
+        # find largest mask
+        ms, mi = None, None
+        for i in mask_list:
+            s = sum(masks[2] == i)
+            if ms is None or ms < s:
+                ms = s
+                mi = i
 
-        for mi in mask_list:
-            classname = retobj["class_names"][mi]
-            score = retobj["scores"][mi]
-            masks = np.array(ret_masks)
-            objmask_idx = masks[:2, masks[2] == mi]
-            objmask = np.zeros(image.cv2_image.shape[:2], dtype="uint8")
-            objmask[objmask_idx[0], objmask_idx[1]] = 255
-            _mask = cv2.bitwise_and(redmask, objmask)
-            result = cv2.bitwise_and(image.cv2_image, image.cv2_image, mask=objmask)
-            texts.append(
-                f"{mi + 1}:{classname}({score:.02%}):{np.count_nonzero(_mask) / np.count_nonzero(objmask):.02%}"
-            )
-            images.append(result)
-            sep = np.zeros((10, result.shape[1], 3), dtype="uint8") + 255
-            images.append(sep)
+        classname = retobj["class_names"][mi]
+        score = retobj["scores"][mi]
+        objmask_idx = masks[:2, masks[2] == mi]
+        objmask = np.zeros(image.cv2_image.shape[:2], dtype="uint8")
+        objmask[objmask_idx[0], objmask_idx[1]] = 255
+        _mask = cv2.bitwise_and(redmask, objmask)
+        result = cv2.bitwise_and(image.cv2_image, image.cv2_image, mask=objmask)
+        text = (
+            f"{classname}"
+            f"\ntotal:{np.count_nonzero(objmask)} pixels"
+            f"\nred:{np.count_nonzero(_mask)} pixels "
+            f"({np.count_nonzero(_mask) / np.count_nonzero(objmask):.02%})"
+        )
+        _, thresh = cv2.threshold(_mask, 127, 255, 0)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result, contours, -1, (0, 255, 0), 3)
 
-        result = np.concatenate(images)
+        strips = np.zeros_like(image.cv2_image)
+        for i in range(result.shape[0]):
+            for j in range(result.shape[1]):
+                if 13 < (i + j) % 40 <= 23:
+                    strips[i, j] = [0, 255, 0]
+        strips = cv2.bitwise_and(strips, strips, mask=_mask)
+        # colored_redmask = np.broadcast_to(np.array([0, 255, 0], dtype='uint8'), result.shape)
+        # colored_redmask = cv2.bitwise_and(colored_redmask, colored_redmask, mask=_mask)
+        result = cv2.addWeighted(result, 1.0, strips, 0.5, 0)
+
         result, thumbnail = self.get_resized(result)
-        result_token = self.upload_image(
-            user_id,
-            get_written_bio(
-                lambda bio: Image.fromarray(np.uint8(result * 255)).save(
-                    bio, format="JPEG"
-                )
-            ),
-        )
-        thumbnail_token = self.upload_image(
-            user_id,
-            get_written_bio(
-                lambda bio: Image.fromarray(np.uint8(thumbnail * 255)).save(
-                    bio, format="JPEG"
-                )
-            ),
-        )
-        text = "\r\n".join(texts)
-        return text, await result_token, await thumbnail_token
+        return text, result, thumbnail

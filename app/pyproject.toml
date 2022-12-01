@@ -18,10 +18,13 @@ httpx = "^0.23.1"
 scikit-image = "^0.19.3"
 sqlalchemy = "^1.4.44"
 pandas = "^1.5.2"
+joblib = "^1.2.0"
+loguru = "^0.6.0"
 
 
 [tool.poetry.group.dev.dependencies]
 black = "^22.10.0"
+ipython = "^8.7.0"
 
 [build-system]
 requires = ["poetry-core"]
