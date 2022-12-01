@@ -95,7 +95,7 @@ async def handle_image_message(event) -> None:
                 ),
             ]
             line_bot_api.reply_message(reply_token=reply_token, messages=message)
-        except ValueError:
+        except Exception:
             line_bot_api.reply_message(
-                reply_token=reply_token, messages=TextSendMessage(text="Error")
+                reply_token=reply_token, messages=TextSendMessage(text="哭哭 我壞掉了 可以再給我一次機會ㄇ")
             )
