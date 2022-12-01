@@ -1,6 +1,6 @@
 import asyncio
 from io import BytesIO
-
+from loguru import logger
 import numpy as np
 from PIL import Image
 from linebot import LineBotApi
@@ -95,7 +95,10 @@ async def handle_image_message(event) -> None:
                 ),
             ]
             line_bot_api.reply_message(reply_token=reply_token, messages=message)
-        except Exception:
+            logger.info('success')
+        except Exception as e:
             line_bot_api.reply_message(
                 reply_token=reply_token, messages=TextSendMessage(text="哭哭 我壞掉了 可以再給我一次機會ㄇ")
             )
+            logger.exception(e)
+    logger.info('done')
