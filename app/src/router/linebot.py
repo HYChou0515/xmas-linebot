@@ -1,8 +1,6 @@
 import asyncio
-import os
-import tempfile
 
-from fastapi import APIRouter, HTTPException, Request, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Request
 from linebot import WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -68,7 +66,7 @@ def handle_text_message(event) -> None:
     Args:
         event (LINE Event Object): Refer to https://developers.line.biz/en/reference/messaging-api/#message-event
     """
-    service.handle_text_message(event=event)
+    asyncio.create_task(service.handle_text_message(event=event))
 
 
 @handler.add(MessageEvent, message=ImageMessage)

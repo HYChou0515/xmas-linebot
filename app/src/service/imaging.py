@@ -10,17 +10,28 @@ import httpx
 import numpy as np
 import requests
 import skimage
-from PIL import Image
 
 from WBsRGB import WBsRGB
 from database.dao.imaging import ImagingDao
-from models import WhiteBalanceSetting, UseUpgradedModel, GamutMapping
-from utils import get_written_bio, ImageConverter
+from models import (
+    WhiteBalanceSetting,
+    UseUpgradedModel,
+    GamutMapping,
+    UserConfig,
+    ObjectDetectionOptions,
+)
+from utils import ImageConverter
 
 image_db = {}
 
 
 class ImagingService:
+    DEFAULT_USER_CONFIG = UserConfig.parse_obj(
+        {
+            "object_detection": "mrcnn",
+        }
+    )
+
     def __init__(self):
         self.image_dao = ImagingDao()
 
@@ -51,6 +62,25 @@ class ImagingService:
 
     async def get_image(self, token):
         return await self.image_dao.get_image(token)
+
+    async def delete_user_config(self, user_id):
+        await self.image_dao.delete_user_config(user_id)
+
+    async def update_user_config(
+        self, user_id, *, object_detection: ObjectDetectionOptions
+    ):
+        user_config = await self.get_or_create_user_config(user_id)
+        user_config.object_detection = object_detection
+        await self.image_dao.update_user_config(user_id, user_config)
+        user_config = await self.get_or_create_user_config(user_id)
+        return user_config
+
+    async def get_or_create_user_config(self, user_id):
+        try:
+            return await self.image_dao.get_user_config(user_id)
+        except ValueError:
+            await self.image_dao.create_user_config(user_id, self.DEFAULT_USER_CONFIG)
+            return await self.image_dao.get_user_config(user_id)
 
     @staticmethod
     def get_red_mask(image):

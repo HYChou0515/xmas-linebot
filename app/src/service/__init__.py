@@ -1,4 +1,3 @@
-import asyncio
 from io import BytesIO
 from loguru import logger
 import numpy as np
@@ -7,6 +6,7 @@ from linebot import LineBotApi
 from linebot.models import TextMessage, TextSendMessage, ImageMessage, ImageSendMessage
 
 from config import config
+from models import ObjectDetectionOptions
 from service.imaging import ImagingService
 from utils import get_written_bio
 
@@ -31,20 +31,36 @@ def handle_unfollow(event) -> None:
     print(f"User leave! user_id: {user_id}")
 
 
-def handle_text_message(event) -> None:
+async def handle_text_message(event) -> None:
+    imaging_service = ImagingService()
     """Event - User sent message
     Args:
         event (LINE Event Object): Refer to https://developers.line.biz/en/reference/messaging-api/#message-event
     """
     reply_token = event.reply_token
+    user_id = event.source.user_id
 
     # Text message
     if isinstance(event.message, TextMessage):
         # Get user sent message
         user_message = event.message.text
-
-        # Reply with same message
-        messages = TextSendMessage(text=user_message)
+        if "1" in user_message:
+            await imaging_service.update_user_config(
+                user_id, object_detection=ObjectDetectionOptions.NONE
+            )
+            return_message = "Ok, use original figure"
+        elif "2" in user_message:
+            await imaging_service.update_user_config(
+                user_id, object_detection=ObjectDetectionOptions.MRCNN
+            )
+            return_message = "Ok, use object detection"
+        else:
+            user_config = await imaging_service.get_or_create_user_config(user_id)
+            current_mode = (
+                1 if user_config.object_detection == ObjectDetectionOptions.NONE else 2
+            )
+            return_message = f"Current Mode: ({current_mode})\nMode Options:\n1: use original figure\n2: use object detection\n"
+        messages = TextSendMessage(text=return_message)
 
         line_bot_api.reply_message(reply_token=reply_token, messages=messages)
 
@@ -63,11 +79,7 @@ async def handle_image_message(event) -> None:
             bio.seek(0)
             await imaging_service.upload_image(
                 user_id,
-                get_written_bio(
-                    lambda b: Image.open(bio).save(
-                        b, format="JPEG"
-                    )
-                ),
+                get_written_bio(lambda b: Image.open(bio).save(b, format="JPEG")),
             )
             result_token = await imaging_service.upload_image(
                 user_id,
@@ -95,10 +107,11 @@ async def handle_image_message(event) -> None:
                 ),
             ]
             line_bot_api.reply_message(reply_token=reply_token, messages=message)
-            logger.info('success')
+            logger.info("success")
         except Exception as e:
             line_bot_api.reply_message(
-                reply_token=reply_token, messages=TextSendMessage(text="哭哭 我壞掉了 可以再給我一次機會ㄇ")
+                reply_token=reply_token,
+                messages=TextSendMessage(text="哭哭 我壞掉了 可以再給我一次機會ㄇ"),
             )
             logger.exception(e)
-    logger.info('done')
+    logger.info("done")

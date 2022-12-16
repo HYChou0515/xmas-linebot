@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional
+from typing import Optional, Literal
 
 from pydantic import BaseModel
 
@@ -18,3 +18,12 @@ class GamutMapping(int, Enum):
 class WhiteBalanceSetting(BaseModel):
     use_upgraded_model: Optional[UseUpgradedModel]
     gamut_mapping: Optional[GamutMapping]
+
+
+class ObjectDetectionOptions(str, Enum):
+    MRCNN = "mrcnn"
+    NONE = "none"
+
+
+class UserConfig(BaseModel):
+    object_detection: Optional[ObjectDetectionOptions]
