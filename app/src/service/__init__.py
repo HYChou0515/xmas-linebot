@@ -69,13 +69,16 @@ async def handle_image_message(event) -> None:
     imaging_service = ImagingService()
     reply_token = event.reply_token
     user_id = event.source.user_id
+    user_config = await imaging_service.get_or_create_user_config(user_id)
     if isinstance(event.message, ImageMessage):
         message_content = line_bot_api.get_message_content(event.message.id)
         bio = BytesIO()
         for chunk in message_content.iter_content():
             bio.write(chunk)
         try:
-            text, result, thumbnail = imaging_service.handle_image(bio)
+            text, result, thumbnail = imaging_service.handle_image(
+                bio, object_detection=user_config.object_detection
+            )
             bio.seek(0)
             await imaging_service.upload_image(
                 user_id,

@@ -168,7 +168,36 @@ class ImagingService:
         )
         return result, thumbnail
 
-    def handle_image(self, image_io):
+    def original_figure_mode(self, image_io):
+        image = ImageConverter(bio=image_io)
+        result = image.cv2_image.copy()
+        (redmask,) = Parallel(n_jobs=1, prefer="threads")(
+            (delayed(self.get_red_mask)(result),)
+        )
+        _mask = redmask.copy()
+        ttl_size = result.shape[0] * result.shape[1]
+        result = result.copy()
+        text = (
+            f"\ntotal:{ttl_size} pixels"
+            f"\nred:{np.count_nonzero(_mask)} pixels "
+            f"({np.count_nonzero(_mask) / ttl_size:.02%})"
+        )
+        _, thresh = cv2.threshold(_mask, 127, 255, 0)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result, contours, -1, (0, 255, 0), 3)
+        strips = np.zeros_like(result)
+        for i in range(result.shape[0]):
+            for j in range(result.shape[1]):
+                if 13 < (i + j) % 40 <= 23:
+                    strips[i, j] = [0, 255, 0]
+        strips = cv2.bitwise_and(strips, strips, mask=_mask)
+        # colored_redmask = np.broadcast_to(np.array([0, 255, 0], dtype='uint8'), result.shape)
+        # colored_redmask = cv2.bitwise_and(colored_redmask, colored_redmask, mask=_mask)
+        result = cv2.addWeighted(result, 1.0, strips, 0.5, 0)
+        result, thumbnail = self.get_resized(result)
+        return text, result, thumbnail
+
+    def mrcnn_mode(self, image_io):
         image = ImageConverter(bio=image_io)
         ret, redmask = Parallel(n_jobs=2, prefer="threads")(
             (
@@ -221,3 +250,9 @@ class ImagingService:
 
         result, thumbnail = self.get_resized(result)
         return text, result, thumbnail
+
+    def handle_image(self, image_io, *, object_detection=ObjectDetectionOptions.MRCNN):
+        if object_detection == ObjectDetectionOptions.MRCNN:
+            return self.mrcnn_mode(image_io)
+        if object_detection == ObjectDetectionOptions.NONE:
+            return self.original_figure_mode(image_io)
