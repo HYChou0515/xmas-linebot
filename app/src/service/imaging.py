@@ -1,10 +1,14 @@
 from collections import Counter
+from functools import lru_cache
+
+import pandas as pd
 from loguru import logger
 from io import BytesIO
 from typing import Optional
 import json
 from joblib import Parallel, delayed
-
+import importlib
+import resources
 import cv2
 import httpx
 import numpy as np
@@ -83,37 +87,70 @@ class ImagingService:
             return await self.image_dao.get_user_config(user_id)
 
     @staticmethod
-    def get_red_mask(image):
-        # image = self.white_balance(image)
-        # image = np.array(image*255, dtype='uint8')
+    def get_color_mask(image, color):
         hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
 
         # Threshold of red in HSV space
         h = hsv[:, :, 0]
         s = hsv[:, :, 1] / 255
         v = hsv[:, :, 2] / 255
-        # bound = np.nonzero(((s + 0.16) * (v + 0.05) >= 0.08) & ((h + 30) % 180 <= 40))
-        bound = np.nonzero(((s + 0.16) * (v + 0.05) >= 0.23) & ((h + 30) % 180 <= 40))
-        redmask = np.zeros(hsv.shape[:2], dtype="uint8")
-        redmask[bound] = 255
-        # Image.fromarray(cv2.bitwise_and(image, image, mask=(rm))).show()
-        # Image.fromarray(image).show()
-        #
-        # kernel = np.zeros((19, 19), dtype='uint8')
-        # for i in range(10):
-        #     kernel[i,i:19-i] = 1
-        #
-        # rm = redmask.copy()
-        # for i in range(1):
-        #     a = np.zeros_like(rm)
-        #     for i in range(4):
-        #         aa = sig.convolve2d(rm, kernel, mode="same")
-        #         aa[aa<kernel.sum()] = 0
-        #         aa[aa>=kernel.sum()] = 1
-        #         a = cv2.bitwise_or(aa, a)
-        #         kernel = np.rot90(kernel)
-        #     rm = cv2.bitwise_and(rm, a)
-        _, labels = cv2.connectedComponents(redmask)
+        colormask = np.zeros(hsv.shape[:2], dtype="uint8")
+        if "red" in color:
+            # bound = np.nonzero(((s + 0.16) * (v + 0.05) >= 0.08) & ((h + 30) % 180 <= 40))
+            bound = np.nonzero(
+                ((s + 0.16) * (v + 0.05) >= 0.23) & ((h + 30) % 180 <= 40)
+            )
+            colormask[bound] = 255
+        if "green" in color:
+            with importlib.resources.files(resources).joinpath("green.csv").open(
+                "r"
+            ) as f:
+                df = pd.read_csv(f)
+                df = df.fillna(method="ffill")
+                df.iloc[:, 1:4] /= 100
+            s_range1 = list(
+                zip(*(df.groupby("h")["s"].min().reset_index().itertuples(index=False)))
+            )
+            s_range2 = list(
+                zip(*(df.groupby("h")["s"].max().reset_index().itertuples(index=False)))
+            )
+            all_h = df["h"].drop_duplicates().sort_values().to_numpy()
+            h_dict = {_h: df[df["h"] == _h] for _h in all_h}
+
+            @lru_cache(maxsize=None)
+            def is_in_green(_h, _s, _v):
+                if not (all_h[0] <= _h <= all_h[-1]):
+                    return False
+                s1 = np.interp(_h, s_range1[0], s_range1[1])
+                s2 = np.interp(_h, s_range2[0], s_range2[1])
+                if not (s1 <= _s <= s2):
+                    return False
+                if _h in h_dict:
+                    hhh = h_dict[_h]
+                else:
+                    i = np.searchsorted(all_h, _h)
+                    hl, hr = all_h[i - 1], all_h[i]
+                    ratio = (_h - hl) / (hr - hl)
+                    hhh = h_dict[hl].reset_index(drop=True) * ratio + h_dict[
+                        hr
+                    ].reset_index(drop=True) * (1 - ratio)
+                v1 = hhh["v1"]
+                v2 = hhh["v2"]
+                ss = hhh["s"]
+                np.interp(_s, ss, v2)
+                if not (np.interp(_s, ss, v1) <= _v <= np.interp(_s, ss, v2)):
+                    return False
+                return True
+
+            bound = np.zeros_like(s)
+            for i in range(bound.shape[0]):
+                for j in range(bound.shape[1]):
+                    bound[i, j] = is_in_green(h[i, j] * 2.0, s[i, j], v[i, j])
+            # bound = np.nonzero(((s + 0.16) * (v + 0.05) >= 0.08) & ((h + 30) % 180 <= 40))
+            bound = np.nonzero(bound)
+            colormask[bound] = 255
+
+        _, labels = cv2.connectedComponents(colormask)
         cnt = Counter(labels.reshape(-1))
 
         # cnt = set(k for k in )
@@ -128,9 +165,9 @@ class ImagingService:
             return x
 
         ff = np.vectorize(f, signature="(n)->()")
-        rm = ff(np.stack([redmask, labels], -1))
+        rm = ff(np.stack([colormask, labels], -1))
         rm = rm.astype("uint8")
-        logger.info("redmask done")
+        logger.info(f"{color} mask done")
         return rm
 
     @staticmethod
@@ -171,15 +208,19 @@ class ImagingService:
     def original_figure_mode(self, image_io):
         image = ImageConverter(bio=image_io)
         result = image.cv2_image.copy()
+        # _, result = self.get_resized(result)
+        # result = (result*255).astype('uint8')
+        # self.get_color_mask(result, 'red')
+
         (redmask,) = Parallel(n_jobs=1, prefer="threads")(
-            (delayed(self.get_red_mask)(result),)
+            (delayed(self.get_color_mask)(result, ("red", "green")),)
         )
         _mask = redmask.copy()
         ttl_size = result.shape[0] * result.shape[1]
         result = result.copy()
         text = (
             f"\ntotal:{ttl_size} pixels"
-            f"\nred:{np.count_nonzero(_mask)} pixels "
+            f"\nred/green:{np.count_nonzero(_mask)} pixels "
             f"({np.count_nonzero(_mask) / ttl_size:.02%})"
         )
         _, thresh = cv2.threshold(_mask, 127, 255, 0)
@@ -202,7 +243,7 @@ class ImagingService:
         ret, redmask = Parallel(n_jobs=2, prefer="threads")(
             (
                 delayed(self.do_mrcnn)(image.base64),
-                delayed(self.get_red_mask)(image.cv2_image),
+                delayed(self.get_color_mask)(image.cv2_image, ("red", "green")),
             )
         )
 
